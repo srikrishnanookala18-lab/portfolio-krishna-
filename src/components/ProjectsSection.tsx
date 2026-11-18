@@ -35,7 +35,10 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
   useEffect(() => {
     let active = true;
     fetch(`/api/weather?city=${encodeURIComponent(city)}`)
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        const ct = res.headers.get('content-type') || '';
+        return res.ok && ct.includes('application/json') ? res.json() : null;
+      })
       .then((data) => {
         if (active && data && data.temp) {
           setWeatherData(data);
@@ -54,7 +57,10 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
   useEffect(() => {
     let active = true;
     fetch('/api/campus/rooms')
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        const ct = res.headers.get('content-type') || '';
+        return res.ok && ct.includes('application/json') ? res.json() : null;
+      })
       .then((data) => {
         if (active && data && Array.isArray(data.rooms) && data.rooms.length > 0) {
           setRooms(data.rooms);
@@ -123,7 +129,8 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q }),
       });
-      if (!res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) {
         runCampusQueryLocal(q);
         return;
       }

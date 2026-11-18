@@ -46,19 +46,43 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
   const [submittedEnquiry, setSubmittedEnquiry] = useState<EnquirySubmission | null>(null);
   const [copiedMessage, setCopiedMessage] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [history, setHistory] = useState<EnquirySubmission[]>([]);
+  const STORAGE_KEY = 'nsk_enquiries_history';
+
+  const loadLocalHistory = (): EnquirySubmission[] => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as EnquirySubmission[]) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveLocalHistory = (items: EnquirySubmission[]) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, 5)));
+    } catch {
+      // Ignore storage quota errors
+    }
+  };
+
+  const [history, setHistory] = useState<EnquirySubmission[]>(() => loadLocalHistory());
 
   useEffect(() => {
     let active = true;
     fetch('/api/enquiries')
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || !ct.includes('application/json')) return null;
+        return res.json();
+      })
       .then((data) => {
-        if (active && data && Array.isArray(data.enquiries)) {
+        if (active && data && Array.isArray(data.enquiries) && data.enquiries.length > 0) {
           setHistory(data.enquiries);
+          saveLocalHistory(data.enquiries);
         }
       })
       .catch(() => {
-        // Silently ignore if backend is unavailable during static preview
+        // Keep localStorage history on static hosts
       });
     return () => {
       active = false;
@@ -127,6 +151,15 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
     setChannelPrompt(null);
     if (!validateFormClient()) return;
 
+    const createLocalEntry = (): EnquirySubmission => ({
+      id: `${Date.now()}`,
+      name: name.trim(),
+      email: email.trim(),
+      doubt: doubt.trim(),
+      description: description.trim(),
+      created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+
     setSubmitting(true);
     try {
       const res = await fetch('/api/enquiries', {
@@ -140,31 +173,44 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
         }),
       });
 
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        const entry = createLocalEntry();
+        setSubmittedEnquiry(entry);
+        const nextHistory = [entry, ...history.filter((h) => h.id !== entry.id)].slice(0, 5);
+        setHistory(nextHistory);
+        saveLocalHistory(nextHistory);
+        onNotify('Enquiry ready — choose Email, LinkedIn, or GitHub to send your message.');
+        return;
+      }
+
       const data = await res.json();
       if (!res.ok) {
         if (data?.errors) {
           setErrors(data.errors);
-        } else {
-          onNotify('Unable to validate enquiry. Please check your details.');
+          return;
         }
+        const entry = createLocalEntry();
+        setSubmittedEnquiry(entry);
+        const nextHistory = [entry, ...history.filter((h) => h.id !== entry.id)].slice(0, 5);
+        setHistory(nextHistory);
+        saveLocalHistory(nextHistory);
+        onNotify('Enquiry ready — choose Email, LinkedIn, or GitHub to send your message.');
         return;
       }
 
       const entry: EnquirySubmission = data.enquiry;
       setSubmittedEnquiry(entry);
-      setHistory((prev) => [entry, ...prev.filter((h) => h.id !== entry.id)].slice(0, 5));
-      onNotify('Enquiry validated & saved — choose Email, LinkedIn, or GitHub to send.');
+      const nextHistory = [entry, ...history.filter((h) => h.id !== entry.id)].slice(0, 5);
+      setHistory(nextHistory);
+      saveLocalHistory(nextHistory);
+      onNotify('Enquiry ready — choose Email, LinkedIn, or GitHub to send your message.');
     } catch {
-      const fallbackEntry: EnquirySubmission = {
-        id: `${Date.now()}`,
-        name: name.trim(),
-        email: email.trim(),
-        doubt: doubt.trim(),
-        description: description.trim(),
-        created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setSubmittedEnquiry(fallbackEntry);
-      setHistory((prev) => [fallbackEntry, ...prev].slice(0, 5));
+      const entry = createLocalEntry();
+      setSubmittedEnquiry(entry);
+      const nextHistory = [entry, ...history.filter((h) => h.id !== entry.id)].slice(0, 5);
+      setHistory(nextHistory);
+      saveLocalHistory(nextHistory);
       onNotify('Enquiry ready — choose Email, LinkedIn, or GitHub to send your message.');
     } finally {
       setSubmitting(false);
@@ -183,7 +229,9 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
     const formatted = formatMessage(submittedEnquiry);
     const updated: EnquirySubmission = { ...submittedEnquiry, dispatched_via: channel };
     setSubmittedEnquiry(updated);
-    setHistory((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+    const nextHistory = history.map((item) => (item.id === updated.id ? updated : item));
+    setHistory(nextHistory);
+    saveLocalHistory(nextHistory);
 
     fetch(`/api/enquiries/${encodeURIComponent(updated.id)}/channel`, {
       method: 'PATCH',
@@ -230,6 +278,7 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
 
   const handleClearHistory = async () => {
     setHistory([]);
+    saveLocalHistory([]);
     try {
       await fetch('/api/enquiries', { method: 'DELETE' });
     } catch {
