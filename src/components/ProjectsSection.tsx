@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, CheckCircle2, Info } from 'lucide-react';
-import { CAMPUS_ROOMS, CampusRoom, WEATHER_SAMPLE } from '../data/portfolioData';
+import { CAMPUS_ROOMS, CampusRoom, CityWeather, WEATHER_SAMPLE } from '../data/portfolioData';
 
 interface ProjectsSectionProps {
   activeProject: 'jiosense' | 'jainsmart';
@@ -11,8 +11,9 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
   activeProject,
   onChangeProject,
 }) => {
-  // Project 1: Jio Sense state
+  // Project 1: Jio Sense state (backed by Python /api/weather)
   const [city, setCity] = useState<'Hyderabad' | 'Bengaluru' | 'Delhi'>('Hyderabad');
+  const [weatherData, setWeatherData] = useState<CityWeather>(WEATHER_SAMPLE.Hyderabad);
   const [forecastMode, setForecastMode] = useState<'hourly' | '7day'>('hourly');
   const [hoveredWeatherPt, setHoveredWeatherPt] = useState<{
     info: string;
@@ -20,17 +21,53 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
     y: number;
   } | null>(null);
 
-  // Project 2: JAIN Smart Navigation state
+  // Project 2: JAIN Smart Navigation state (backed by Python /api/campus/query)
   const [curFloor, setCurFloor] = useState<1 | 2 | 3>(2);
+  const [rooms, setRooms] = useState<CampusRoom[]>(CAMPUS_ROOMS);
   const [queryInput, setQueryInput] = useState('Find available AI Lab');
   const [highlightedIds, setHighlightedIds] = useState<string[]>(['R201']);
   const [traceLines, setTraceLines] = useState<string[]>([
     '1. NL Query: "Find available AI Lab"',
-    '2. Pipeline (Simulated Gemini + Express/DB): Intent → Room & availability lookup',
+    '2. Python Intent Engine (lab_lookup): SQLite room & availability lookup',
     '3. Matched: R201 (AI & ML Lab 201, Floor 2, Available)',
   ]);
 
-  const weatherData = WEATHER_SAMPLE[city];
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/weather?city=${encodeURIComponent(city)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && data.temp) {
+          setWeatherData(data);
+        } else if (active) {
+          setWeatherData(WEATHER_SAMPLE[city]);
+        }
+      })
+      .catch(() => {
+        if (active) setWeatherData(WEATHER_SAMPLE[city]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [city]);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/campus/rooms')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && Array.isArray(data.rooms) && data.rooms.length > 0) {
+          setRooms(data.rooms);
+        }
+      })
+      .catch(() => {
+        // Fallback to static room schema if API is offline
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const series = forecastMode === 'hourly' ? weatherData.hourly : weatherData.daily;
 
   const w = 420;
@@ -48,24 +85,23 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
   const linePts = series.map((p, i) => `${xFor(i).toFixed(1)},${yFor(p.v).toFixed(1)}`).join(' ');
   const areaPts = `${xFor(0).toFixed(1)},${base} ${linePts} ${xFor(series.length - 1).toFixed(1)},${base}`;
 
-  const runCampusQuery = (rawQuery: string) => {
-    const q = rawQuery.trim() || 'AI Lab';
+  const runCampusQueryLocal = (q: string) => {
     const text = q.toLowerCase();
     let matches: CampusRoom[] = [];
     if (text.includes('vacant') || (text.includes('available') && !text.includes('ai'))) {
-      matches = CAMPUS_ROOMS.filter((r) => r.status === 'Available');
+      matches = rooms.filter((r) => r.status === 'Available');
     } else if (text.includes('ai') || text.includes('ml')) {
-      matches = CAMPUS_ROOMS.filter((r) => r.id === 'R201');
+      matches = rooms.filter((r) => r.id === 'R201');
     } else if (text.includes('304')) {
-      matches = CAMPUS_ROOMS.filter((r) => r.id === 'R304');
+      matches = rooms.filter((r) => r.id === 'R304');
     } else if (text.includes('lab')) {
-      matches = CAMPUS_ROOMS.filter((r) => r.type === 'Laboratory');
+      matches = rooms.filter((r) => r.type === 'Laboratory');
     } else {
-      matches = CAMPUS_ROOMS.filter(
+      matches = rooms.filter(
         (r) => r.name.toLowerCase().includes(text) || r.id.toLowerCase().includes(text)
       );
     }
-    if (matches.length === 0) matches = [CAMPUS_ROOMS[0]];
+    if (matches.length === 0) matches = [rooms[0]];
 
     setCurFloor(matches[0].floor);
     setHighlightedIds(matches.map((m) => m.id));
@@ -74,12 +110,33 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
       .join('; ');
     setTraceLines([
       `1. NL Query: "${q}"`,
-      '2. Pipeline (Simulated Gemini + Express/DB): Intent → Room & availability lookup',
+      '2. Intent Engine: Room & availability lookup',
       `3. Matched: ${summary}`,
     ]);
   };
 
-  const floorRooms = CAMPUS_ROOMS.filter((r) => r.floor === curFloor);
+  const runCampusQuery = async (rawQuery: string) => {
+    const q = rawQuery.trim() || 'Find available AI Lab';
+    try {
+      const res = await fetch('/api/campus/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+      });
+      if (!res.ok) {
+        runCampusQueryLocal(q);
+        return;
+      }
+      const data = await res.json();
+      setCurFloor(data.floor);
+      setHighlightedIds(data.highlighted_ids || []);
+      setTraceLines(data.trace || []);
+    } catch {
+      runCampusQueryLocal(q);
+    }
+  };
+
+  const floorRooms = rooms.filter((r) => r.floor === curFloor);
 
   return (
     <section id="projects" className="py-12 border-t border-[#E4E2DC] dark:border-[#232732]">
@@ -93,11 +150,10 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
           </h2>
         </div>
         <p className="text-xs text-[#555B66] dark:text-[#9CA3AF]">
-          Switch projects and test interactive simulations of their workflows
+          Switch projects and test interactive simulations powered by the Python API
         </p>
       </div>
 
-      {/* Project Switcher Tabs */}
       <div
         className="flex flex-wrap items-center gap-2 mb-6"
         role="tablist"
@@ -134,7 +190,6 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
         </button>
       </div>
 
-      {/* PROJECT 1: JIO SENSE */}
       {activeProject === 'jiosense' && (
         <article className="bg-white dark:bg-[#12141A] border border-[#E4E2DC] dark:border-[#232732] rounded-2xl p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <div className="lg:col-span-5 flex flex-col gap-5">
@@ -161,7 +216,7 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
                 Technologies Used
               </p>
               <p className="text-xs font-mono text-[#111318] dark:text-[#F3F4F6] leading-relaxed">
-                HTML · CSS · JavaScript · Chart.js · Open-Meteo API
+                HTML · CSS · JavaScript · Chart.js · Open-Meteo API · Python
               </p>
             </div>
           </div>
@@ -169,7 +224,7 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
           <div className="lg:col-span-7 bg-[#F8F8F6] dark:bg-[#191C24] border border-[#E4E2DC] dark:border-[#232732] rounded-xl p-5 flex flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="text-xs font-medium text-[#555B66] dark:text-[#9CA3AF]">
-                Interactive Sandbox · Sample Open-Meteo Telemetry
+                Interactive Sandbox · Weather Telemetry
               </span>
               <div className="inline-flex items-center gap-1 p-1 bg-white dark:bg-[#12141A] border border-[#E4E2DC] dark:border-[#232732] rounded-lg">
                 {(['Hyderabad', 'Bengaluru', 'Delhi'] as const).map((c) => (
@@ -334,7 +389,6 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
         </article>
       )}
 
-      {/* PROJECT 2: JAIN SMART NAVIGATION */}
       {activeProject === 'jainsmart' && (
         <article className="bg-white dark:bg-[#12141A] border border-[#E4E2DC] dark:border-[#232732] rounded-2xl p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <div className="lg:col-span-5 flex flex-col gap-5">
@@ -370,7 +424,7 @@ export const ProjectsSection: React.FC<ProjectsSectionProps> = ({
                 Technologies Used
               </p>
               <p className="text-xs font-mono text-[#111318] dark:text-[#F3F4F6] leading-relaxed">
-                React · TypeScript · Tailwind CSS · Node.js · Express.js · Google Gemini API · Leaflet · Three.js
+                React · TypeScript · Tailwind CSS · Python · SQLite · Node.js · Google Gemini API · Leaflet · Three.js
               </p>
             </div>
           </div>

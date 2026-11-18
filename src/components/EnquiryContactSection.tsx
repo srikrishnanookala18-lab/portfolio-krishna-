@@ -20,16 +20,15 @@ export interface EnquirySubmission {
   email: string;
   doubt: string;
   description: string;
-  createdAt: string;
-  dispatchedVia?: 'Email' | 'LinkedIn' | 'GitHub';
+  formatted_message?: string;
+  created_at?: string;
+  dispatched_via?: 'Email' | 'LinkedIn' | 'GitHub' | null;
 }
 
 interface EnquiryContactSectionProps {
   focusTrigger: number;
   onNotify: (msg: string) => void;
 }
-
-const STORAGE_KEY = 'nsk_enquiries_history';
 
 export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
   focusTrigger,
@@ -46,15 +45,25 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
   const [channelPrompt, setChannelPrompt] = useState<string | null>(null);
   const [submittedEnquiry, setSubmittedEnquiry] = useState<EnquirySubmission | null>(null);
   const [copiedMessage, setCopiedMessage] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [history, setHistory] = useState<EnquirySubmission[]>([]);
 
-  const [history, setHistory] = useState<EnquirySubmission[]>(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? (JSON.parse(raw) as EnquirySubmission[]) : [];
-    } catch {
-      return [];
-    }
-  });
+  useEffect(() => {
+    let active = true;
+    fetch('/api/enquiries')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && Array.isArray(data.enquiries)) {
+          setHistory(data.enquiries);
+        }
+      })
+      .catch(() => {
+        // Silently ignore if backend is unavailable during static preview
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (focusTrigger > 0) {
@@ -62,16 +71,7 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
     }
   }, [focusTrigger]);
 
-  const persistHistory = (items: EnquirySubmission[]) => {
-    setHistory(items);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, 5)));
-    } catch {
-      // Ignore storage quota errors
-    }
-  };
-
-  const validateForm = (): boolean => {
+  const validateFormClient = (): boolean => {
     const nextErrors: Partial<Record<'name' | 'email' | 'doubt' | 'description', string>> = {};
     if (!name.trim()) nextErrors.name = 'Please enter your name.';
     if (!email.trim()) {
@@ -88,15 +88,16 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
   };
 
   const formatMessage = (item: EnquirySubmission) =>
+    item.formatted_message ||
     [
-      `Hello Sri Krishna,`,
-      ``,
+      'Hello Sri Krishna,',
+      '',
       `Name: ${item.name}`,
       `Email: ${item.email}`,
       `Doubt / Topic: ${item.doubt}`,
-      ``,
-      `Description about my doubt:`,
-      `${item.description}`,
+      '',
+      'Description about my doubt:',
+      item.description,
     ].join('\n');
 
   const copyToClipboard = async (text: string): Promise<boolean> => {
@@ -121,23 +122,53 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
     }
   };
 
-  const handleEnquirySubmit = (e: React.FormEvent) => {
+  const handleEnquirySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setChannelPrompt(null);
-    if (!validateForm()) return;
+    if (!validateFormClient()) return;
 
-    const entry: EnquirySubmission = {
-      id: `${Date.now()}`,
-      name: name.trim(),
-      email: email.trim(),
-      doubt: doubt.trim(),
-      description: description.trim(),
-      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
+    setSubmitting(true);
+    try {
+      const res = await fetch('/api/enquiries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          doubt: doubt.trim(),
+          description: description.trim(),
+        }),
+      });
 
-    setSubmittedEnquiry(entry);
-    persistHistory([entry, ...history.filter((h) => h.id !== entry.id)].slice(0, 5));
-    onNotify('Enquiry ready — choose Email, LinkedIn, or GitHub to send your message.');
+      const data = await res.json();
+      if (!res.ok) {
+        if (data?.errors) {
+          setErrors(data.errors);
+        } else {
+          onNotify('Unable to validate enquiry. Please check your details.');
+        }
+        return;
+      }
+
+      const entry: EnquirySubmission = data.enquiry;
+      setSubmittedEnquiry(entry);
+      setHistory((prev) => [entry, ...prev.filter((h) => h.id !== entry.id)].slice(0, 5));
+      onNotify('Enquiry validated & saved — choose Email, LinkedIn, or GitHub to send.');
+    } catch {
+      const fallbackEntry: EnquirySubmission = {
+        id: `${Date.now()}`,
+        name: name.trim(),
+        email: email.trim(),
+        doubt: doubt.trim(),
+        description: description.trim(),
+        created_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setSubmittedEnquiry(fallbackEntry);
+      setHistory((prev) => [fallbackEntry, ...prev].slice(0, 5));
+      onNotify('Enquiry ready — choose Email, LinkedIn, or GitHub to send your message.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleDispatchChannel = async (channel: 'Email' | 'LinkedIn' | 'GitHub') => {
@@ -150,9 +181,15 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
     }
 
     const formatted = formatMessage(submittedEnquiry);
-    const updated: EnquirySubmission = { ...submittedEnquiry, dispatchedVia: channel };
+    const updated: EnquirySubmission = { ...submittedEnquiry, dispatched_via: channel };
     setSubmittedEnquiry(updated);
-    persistHistory([updated, ...history.filter((h) => h.id !== updated.id)].slice(0, 5));
+    setHistory((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+
+    fetch(`/api/enquiries/${encodeURIComponent(updated.id)}/channel`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    }).catch(() => {});
 
     if (channel === 'Email') {
       const subject = encodeURIComponent(`[Portfolio Enquiry] ${submittedEnquiry.doubt}`);
@@ -191,6 +228,15 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
     }
   };
 
+  const handleClearHistory = async () => {
+    setHistory([]);
+    try {
+      await fetch('/api/enquiries', { method: 'DELETE' });
+    } catch {
+      // Ignore network errors
+    }
+  };
+
   return (
     <section id="contact" className="py-12 border-t border-[#E4E2DC] dark:border-[#232732]">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2 mb-7">
@@ -208,7 +254,6 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left: Structured Enquiry Form */}
         <div className="lg:col-span-7 bg-white dark:bg-[#12141A] border border-[#E4E2DC] dark:border-[#232732] rounded-2xl p-6 md:p-7">
           {!submittedEnquiry ? (
             <form onSubmit={handleEnquirySubmit} noValidate className="space-y-4">
@@ -364,10 +409,11 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
               <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#2557D6] hover:bg-[#1D46B3] dark:bg-[#60A5FA] dark:text-[#090D16] dark:hover:bg-[#93C5FD] rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[42px] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2557D6]"
+                  disabled={submitting}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-[#2557D6] hover:bg-[#1D46B3] disabled:opacity-60 dark:bg-[#60A5FA] dark:text-[#090D16] dark:hover:bg-[#93C5FD] rounded-lg transition-colors whitespace-nowrap shrink-0 min-h-[42px] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2557D6]"
                 >
                   <Send className="w-4 h-4" />
-                  <span>Prepare Enquiry to Send</span>
+                  <span>{submitting ? 'Validating...' : 'Prepare Enquiry to Send'}</span>
                 </button>
                 <span className="text-xs text-[#848B98] dark:text-[#6B7280]">
                   No phone / mobile contact · Direct reply to your email
@@ -375,7 +421,6 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
               </div>
             </form>
           ) : (
-            /* Step 2: Message Ready & Direct Dispatch via Email / LinkedIn / GitHub */
             <div className="space-y-5">
               <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b border-[#E4E2DC] dark:border-[#232732]">
                 <div className="flex items-start gap-2.5">
@@ -474,9 +519,9 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
                   )}
                 </button>
 
-                {submittedEnquiry.dispatchedVia && (
+                {submittedEnquiry.dispatched_via && (
                   <span className="text-xs font-medium text-[#15803D] dark:text-[#4ADE80]">
-                    Ready / opened in {submittedEnquiry.dispatchedVia}
+                    Ready / opened in {submittedEnquiry.dispatched_via}
                   </span>
                 )}
               </div>
@@ -484,7 +529,6 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
           )}
         </div>
 
-        {/* Right: Permitted Messaging Channels (Email, LinkedIn, GitHub ONLY) */}
         <div className="lg:col-span-5 flex flex-col gap-3">
           <div className="bg-white dark:bg-[#12141A] border border-[#E4E2DC] dark:border-[#232732] rounded-2xl p-5">
             <div className="flex items-center justify-between gap-2 mb-1">
@@ -503,7 +547,6 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
             </p>
 
             <div className="space-y-2.5">
-              {/* Email Channel */}
               <button
                 type="button"
                 onClick={() => handleDispatchChannel('Email')}
@@ -532,7 +575,6 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
                 </span>
               </button>
 
-              {/* LinkedIn Channel */}
               <button
                 type="button"
                 onClick={() => handleDispatchChannel('LinkedIn')}
@@ -561,7 +603,6 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
                 </span>
               </button>
 
-              {/* GitHub Channel */}
               <button
                 type="button"
                 onClick={() => handleDispatchChannel('GitHub')}
@@ -600,7 +641,7 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
                 </h4>
                 <button
                   type="button"
-                  onClick={() => persistHistory([])}
+                  onClick={handleClearHistory}
                   className="text-xs text-[#848B98] hover:text-[#111318] dark:hover:text-[#F3F4F6] cursor-pointer"
                 >
                   Clear
@@ -619,7 +660,7 @@ export const EnquiryContactSection: React.FC<EnquiryContactSectionProps> = ({
                         {item.doubt}
                       </span>
                       <span className="font-mono text-[11px] text-[#848B98] shrink-0">
-                        {item.dispatchedVia || item.createdAt}
+                        {item.dispatched_via || item.created_at || 'Saved'}
                       </span>
                     </div>
                     <div className="text-[11px] text-[#555B66] dark:text-[#9CA3AF] truncate mt-0.5">
