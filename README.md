@@ -17,20 +17,19 @@ Personal portfolio for **Nookala Sri Krishna**, B.Tech Computer Science & Engine
 ## Tech Stack
 
 - **Frontend**: React 19, TypeScript, Tailwind CSS v4, Lucide Icons, Vite
-- **Local Full-Stack Backend**: Python 3 (`http.server` + `sqlite3` persistence) proxied through Express (`server.ts`)
-- **Netlify Production Deployment**: Static SPA (`dist/`) + Netlify Functions (`netlify/functions/api.mjs`) + `localStorage` fallback
+- **Backend**: Python 3 (`http.server` + `sqlite3` persistence), running natively as a **Vercel Python Serverless Function** (`/api/index.py`) in production and via Express proxy (`server.ts`) in local development
 
 ## Project Structure
 
 ```text
+├── api/
+│   └── index.py              # Vercel Python serverless function entrypoint
 ├── backend/                  # Python 3 REST API & SQLite persistence
-│   ├── app.py                # Python backend entry point
-│   ├── database.py           # SQLite schema & queries (enquiries, campus rooms)
+│   ├── app.py                # Local Python backend entry point
+│   ├── database.py           # SQLite schema & queries (uses /tmp on Vercel)
 │   ├── portfolio_engine.py   # Campus NL query, weather comfort & GPA analytics
 │   ├── server.py             # ThreadingHTTPServer JSON API
 │   └── validators.py         # 4-field enquiry validation & channel formatting
-├── netlify/functions/        # Serverless API adapter for Netlify deploys
-│   └── api.mjs
 ├── src/
 │   ├── assets/images/        # Studio hero image
 │   ├── components/           # Modular React UI sections
@@ -39,16 +38,16 @@ Personal portfolio for **Nookala Sri Krishna**, B.Tech Computer Science & Engine
 │   ├── index.css
 │   └── main.tsx
 ├── index.html
-├── netlify.toml              # Netlify build, redirects & functions config
 ├── package.json
-└── server.ts                 # Express dev/prod server + Python process supervisor
+├── server.ts                 # Local Express dev/prod server + Python process supervisor
+└── vercel.json               # Vercel build, Python API rewrite & SPA fallback config
 ```
 
 ## Local Development
 
 ### Prerequisites
 - Node.js 20+ (tested on Node 22)
-- Python 3.10+ (for the local Python backend)
+- Python 3.10+
 
 ### Install & Run
 ```bash
@@ -63,26 +62,21 @@ npm run lint
 npm run build
 ```
 
-## Deploying to Netlify
+## Deploying to Vercel
 
-### Option 1: GitHub + Netlify (Recommended)
+### Option 1: GitHub + Vercel (Recommended)
 1. Push this repository to GitHub.
-2. In **Netlify**, choose **Add new site → Import an existing project** and select your repository.
-3. Netlify automatically reads `netlify.toml`:
-   - **Build command**: `npm run build`
-   - **Publish directory**: `dist`
-   - **Functions directory**: `netlify/functions`
-4. Click **Deploy site**.
+2. Go to **vercel.com/new** and import your GitHub repository.
+3. Vercel automatically reads `vercel.json`:
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+   - **Python API**: Automatically deploys `api/index.py` (with `backend/`) as a Python Serverless Function for `/api/*`.
+4. Click **Deploy**.
 
-### Option 2: Netlify CLI
+### Option 2: Vercel CLI
 ```bash
-npm run build
-npx netlify-cli deploy --prod
+npx vercel --prod
 ```
-
-### Option 3: Drag-and-Drop (Netlify Drop)
-1. Run `npm run build`.
-2. Upload the generated `dist/` folder to **app.netlify.com/drop**.
 
 ## Contact Channels
 

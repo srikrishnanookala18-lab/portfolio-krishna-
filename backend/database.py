@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-DB_PATH = Path(__file__).resolve().parent / "portfolio.db"
+DB_PATH = (
+    Path("/tmp/portfolio.db")
+    if os.environ.get("VERCEL")
+    else Path(__file__).resolve().parent / "portfolio.db"
+)
 
 SEED_ROOMS: List[Dict[str, Any]] = [
     {"id": "R101", "name": "Central Lobby & Helpdesk", "floor": 1, "type": "Facility", "status": "Open", "x": 18, "y": 18, "w": 120, "h": 62},
